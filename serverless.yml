@@ -47,3 +47,21 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: ANY
+
+resources:
+  Resources:
+    JobsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.jobsTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+    JobsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.jobsBucketName}
