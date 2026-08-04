@@ -1,0 +1,49 @@
+service: scraping-service
+
+provider:
+  name: aws
+  region: eu-west-1
+  architecture: arm64
+  ecr:
+    images:
+      api:
+        path: .
+        file: Dockerfile
+        platform: linux/arm64
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:DeleteItem
+          Resource: "arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/${self:custom.jobsTableName}"
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource: "arn:aws:s3:::${self:custom.jobsBucketName}/*"
+
+custom:
+  jobsTableName: scraping-jobs
+  jobsBucketName: scraping-jobs-actions
+
+package:
+  individually: true
+
+functions:
+  api:
+    image:
+      name: api
+    memorySize: 1024
+    timeout: 29
+    environment:
+      JOBS_TABLE_NAME: ${self:custom.jobsTableName}
+      JOBS_BUCKET_NAME: ${self:custom.jobsBucketName}
+      SECRET_KEY: ${env:SECRET_KEY}
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
