@@ -29,3 +29,7 @@ path = "src/http_handler.rs"
 [[bin]]
 name = "event_handler"
 path = "src/event_handler.rs"
+
+[[bin]]
+name = "run_job"
+path = "src/run_job.rs"

@@ -38,7 +38,7 @@ pub async fn setup() -> AppState {
         DEFAULT_S3_OFFLOAD_THRESHOLD_BYTES,
     ));
 
-    let scraper = Arc::new(ChromiumoxideScraper::new(chrome_executable_path));
+    let scraper = Arc::new(ChromiumoxideScraper::new(chrome_executable_path, true));
     let action_serializer = Arc::new(JsonActionSerializer);
 
     AppState {

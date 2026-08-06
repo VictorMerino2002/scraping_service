@@ -22,12 +22,14 @@ const SERVERLESS_CHROME_ARGS: [&str; 3] =
 
 pub struct ChromiumoxideScraper {
     chrome_executable_path: Option<PathBuf>,
+    headless: bool,
 }
 
 impl ChromiumoxideScraper {
-    pub fn new(chrome_executable_path: Option<PathBuf>) -> Self {
+    pub fn new(chrome_executable_path: Option<PathBuf>, headless: bool) -> Self {
         Self {
             chrome_executable_path,
+            headless,
         }
     }
 }
@@ -36,6 +38,10 @@ impl ChromiumoxideScraper {
 impl ScraperPort for ChromiumoxideScraper {
     async fn execute(&self, job: &Job) -> Result<HashMap<String, String>, Error> {
         let mut builder = BrowserConfig::builder().args(SERVERLESS_CHROME_ARGS);
+
+        if !self.headless {
+            builder = builder.with_head();
+        }
 
         if let Some(path) = &self.chrome_executable_path {
             builder = builder.chrome_executable(path);
