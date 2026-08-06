@@ -4,6 +4,7 @@ ARG CHROMIUM_VERSION=v149.0.0
 ARG CARGO_LAMBDA_VERSION=v1.9.1
 ARG ZIG_VERSION=0.14.1
 ARG LAMBDA_ARCH=arm64
+ARG BIN_NAME=http_handler
 
 # ---- Fetch and unpack the Lambda-compatible headless Chromium build ----
 # https://github.com/Sparticuz/chromium ships chromium + its shared libs
@@ -36,6 +37,7 @@ RUN set -eux; \
 FROM rust:1-bookworm AS builder
 ARG CARGO_LAMBDA_VERSION
 ARG ZIG_VERSION
+ARG BIN_NAME
 # cargo-lambda cross-compiles to arm64 via Zig, regardless of the builder's
 # own (amd64) host architecture.
 RUN set -eux; \
@@ -52,12 +54,13 @@ RUN set -eux; \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo lambda build --release --arm64 --bin http_handler
+RUN cargo lambda build --release --arm64 --bin ${BIN_NAME}
 
 # ---- Final Lambda image ----
 FROM public.ecr.aws/lambda/provided:al2023-arm64
+ARG BIN_NAME
 COPY --from=chromium /opt/chromium /opt/chromium
-COPY --from=builder /build/target/lambda/http_handler/bootstrap /var/runtime/bootstrap
+COPY --from=builder /build/target/lambda/${BIN_NAME}/bootstrap /var/runtime/bootstrap
 ENV CHROME_EXECUTABLE_PATH=/opt/chromium/chromium
 ENV LD_LIBRARY_PATH=/opt/chromium/lib:${LD_LIBRARY_PATH}
 CMD ["bootstrap"]

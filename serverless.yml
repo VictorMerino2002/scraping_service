@@ -9,6 +9,11 @@ provider:
       api:
         path: .
         file: Dockerfile
+      executor:
+        path: .
+        file: Dockerfile
+        buildArgs:
+          BIN_NAME: event_handler
   iam:
     role:
       statements:
@@ -46,6 +51,15 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: ANY
+
+  executor:
+    image:
+      name: executor
+    memorySize: 2048
+    timeout: 300
+    environment:
+      JOBS_TABLE_NAME: ${self:custom.jobsTableName}
+      JOBS_BUCKET_NAME: ${self:custom.jobsBucketName}
 
 resources:
   Resources:
