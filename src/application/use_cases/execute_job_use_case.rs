@@ -24,7 +24,7 @@ impl ExecuteJobUseCase {
         self.job_repository.save(&job).await?;
 
         match self.scraper.execute(&job).await {
-            Ok(_) => job.complete()?,
+            Ok(results) => job.complete(results)?,
             Err(error) => job.fail(error.to_string())?,
         }
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{DateTime, Utc};
@@ -41,6 +43,69 @@ impl<S: ActionSerializer<Input = String>> DynamoS3JobRepository<S> {
     fn actions_s3_key(job_id: &Uuid) -> String {
         format!("jobs/{job_id}/actions.json")
     }
+
+    fn results_s3_key(job_id: &Uuid) -> String {
+        format!("jobs/{job_id}/results.json")
+    }
+
+    /// Stores `payload` inline if it fits under the offload threshold, otherwise
+    /// uploads it to S3 under `s3_key` and returns the key instead. Shared by both
+    /// the `actions` and `results` fields, which follow the same inline-or-S3 shape.
+    async fn store_payload(
+        &self,
+        s3_key: String,
+        payload: String,
+    ) -> Result<(Option<String>, Option<String>), Error> {
+        if payload.len() > self.s3_offload_threshold_bytes {
+            self.s3_client
+                .put_object()
+                .bucket(&self.bucket_name)
+                .key(&s3_key)
+                .content_type("application/json")
+                .body(payload.into_bytes().into())
+                .send()
+                .await
+                .map_err(|error| Error::NetworkError(error.to_string()))?;
+
+            Ok((None, Some(s3_key)))
+        } else {
+            Ok((Some(payload), None))
+        }
+    }
+
+    /// Reverse of `store_payload`: resolves the inline value or fetches it from S3.
+    async fn load_payload(
+        &self,
+        inline: Option<String>,
+        s3_key: Option<String>,
+    ) -> Result<Option<String>, Error> {
+        match (inline, s3_key) {
+            (Some(payload), _) => Ok(Some(payload)),
+            (None, Some(key)) => {
+                let output = self
+                    .s3_client
+                    .get_object()
+                    .bucket(&self.bucket_name)
+                    .key(&key)
+                    .send()
+                    .await
+                    .map_err(|error| Error::NetworkError(error.to_string()))?;
+
+                let bytes = output
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|error| Error::NetworkError(error.to_string()))?
+                    .into_bytes();
+
+                let payload = String::from_utf8(bytes.to_vec())
+                    .map_err(|error| Error::Unknown(error.to_string()))?;
+
+                Ok(Some(payload))
+            }
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -52,6 +117,10 @@ struct JobRecord {
     actions_s3_key: Option<String>,
     status: JobStatus,
     config: Option<JobConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    results_inline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    results_s3_key: Option<String>,
     error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
@@ -62,25 +131,19 @@ struct JobRecord {
 impl<S: ActionSerializer<Input = String>> JobRepositoryPort for DynamoS3JobRepository<S> {
     async fn save(&self, job: &Job) -> Result<(), Error> {
         let actions_json = self.action_serializer.to(job.actions())?;
+        let (actions_inline, actions_s3_key) = self
+            .store_payload(Self::actions_s3_key(&job.id()), actions_json)
+            .await?;
 
-        let (actions_inline, actions_s3_key) =
-            if actions_json.len() > self.s3_offload_threshold_bytes {
-                let key = Self::actions_s3_key(&job.id());
-
-                self.s3_client
-                    .put_object()
-                    .bucket(&self.bucket_name)
-                    .key(&key)
-                    .content_type("application/json")
-                    .body(actions_json.into_bytes().into())
-                    .send()
-                    .await
-                    .map_err(|error| Error::NetworkError(error.to_string()))?;
-
-                (None, Some(key))
-            } else {
-                (Some(actions_json), None)
-            };
+        let (results_inline, results_s3_key) = match job.results() {
+            Some(results) => {
+                let results_json = serde_json::to_string(results)
+                    .map_err(|error| Error::Unknown(error.to_string()))?;
+                self.store_payload(Self::results_s3_key(&job.id()), results_json)
+                    .await?
+            }
+            None => (None, None),
+        };
 
         let record = JobRecord {
             id: job.id(),
@@ -88,6 +151,8 @@ impl<S: ActionSerializer<Input = String>> JobRepositoryPort for DynamoS3JobRepos
             actions_s3_key,
             status: job.status(),
             config: job.config().cloned(),
+            results_inline,
+            results_s3_key,
             error: job.error().map(str::to_string),
             created_at: job.created_at(),
             started_at: job.started_at(),
@@ -125,42 +190,32 @@ impl<S: ActionSerializer<Input = String>> JobRepositoryPort for DynamoS3JobRepos
         let record: JobRecord = serde_dynamo::from_item(item)
             .map_err(|error| Error::DatabaseError(error.to_string()))?;
 
-        let actions_json = match (record.actions_inline, record.actions_s3_key) {
-            (Some(actions_json), _) => actions_json,
-            (None, Some(key)) => {
-                let output = self
-                    .s3_client
-                    .get_object()
-                    .bucket(&self.bucket_name)
-                    .key(&key)
-                    .send()
-                    .await
-                    .map_err(|error| Error::NetworkError(error.to_string()))?;
-
-                let bytes = output
-                    .body
-                    .collect()
-                    .await
-                    .map_err(|error| Error::NetworkError(error.to_string()))?
-                    .into_bytes();
-
-                String::from_utf8(bytes.to_vec())
-                    .map_err(|error| Error::Unknown(error.to_string()))?
-            }
-            (None, None) => {
-                return Err(Error::DatabaseError(
+        let actions_json = self
+            .load_payload(record.actions_inline, record.actions_s3_key)
+            .await?
+            .ok_or_else(|| {
+                Error::DatabaseError(
                     "job record has neither inline actions nor an S3 key".to_string(),
-                ));
-            }
-        };
-
+                )
+            })?;
         let actions = self.action_serializer.from(actions_json)?;
+
+        let results_json = self
+            .load_payload(record.results_inline, record.results_s3_key)
+            .await?;
+        let results = results_json
+            .map(|json| {
+                serde_json::from_str::<HashMap<String, String>>(&json)
+                    .map_err(|error| Error::Unknown(error.to_string()))
+            })
+            .transpose()?;
 
         Ok(Some(Job::from_persisted(
             record.id,
             actions,
             record.status,
             record.config,
+            results,
             record.error,
             record.created_at,
             record.started_at,
@@ -182,7 +237,10 @@ impl<S: ActionSerializer<Input = String>> JobRepositoryPort for DynamoS3JobRepos
             let record: JobRecord = serde_dynamo::from_item(item)
                 .map_err(|error| Error::DatabaseError(error.to_string()))?;
 
-            if let Some(key) = record.actions_s3_key {
+            for key in [record.actions_s3_key, record.results_s3_key]
+                .into_iter()
+                .flatten()
+            {
                 self.s3_client
                     .delete_object()
                     .bucket(&self.bucket_name)
@@ -219,6 +277,8 @@ mod tests {
             actions_s3_key: None,
             status: JobStatus::Pending,
             config: None,
+            results_inline: None,
+            results_s3_key: None,
             error: None,
             created_at: Utc::now(),
             started_at: None,
@@ -227,6 +287,8 @@ mod tests {
 
         let json = serde_json::to_string(&record).unwrap();
         assert!(!json.contains("actions_s3_key"));
+        assert!(!json.contains("results_inline"));
+        assert!(!json.contains("results_s3_key"));
 
         let round_tripped: JobRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(round_tripped, record);
@@ -240,6 +302,8 @@ mod tests {
             actions_s3_key: Some("jobs/some-id/actions.json".to_string()),
             status: JobStatus::InProgress,
             config: None,
+            results_inline: Some(r##"{"title":"rust"}"##.to_string()),
+            results_s3_key: None,
             error: None,
             created_at: Utc::now(),
             started_at: Some(Utc::now()),

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -35,6 +36,7 @@ pub struct JobResponse {
     status: JobStatus,
     actions: Vec<JobAction>,
     config: Option<JobConfig>,
+    results: Option<HashMap<String, String>>,
     error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
@@ -48,6 +50,7 @@ impl From<&Job> for JobResponse {
             status: job.status(),
             actions: job.actions().to_vec(),
             config: job.config().cloned(),
+            results: job.results().cloned(),
             error: job.error().map(str::to_string),
             created_at: job.created_at(),
             started_at: job.started_at(),

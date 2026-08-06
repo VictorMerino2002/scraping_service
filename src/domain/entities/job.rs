@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -8,6 +10,7 @@ pub struct Job {
     actions: Vec<JobAction>,
     status: JobStatus,
     config: Option<JobConfig>,
+    results: Option<HashMap<String, String>>,
     error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
@@ -27,6 +30,7 @@ impl Job {
             actions,
             status: JobStatus::Pending,
             config,
+            results: None,
             error: None,
             created_at: Utc::now(),
             started_at: None,
@@ -43,6 +47,7 @@ impl Job {
         actions: Vec<JobAction>,
         status: JobStatus,
         config: Option<JobConfig>,
+        results: Option<HashMap<String, String>>,
         error: Option<String>,
         created_at: DateTime<Utc>,
         started_at: Option<DateTime<Utc>>,
@@ -53,6 +58,7 @@ impl Job {
             actions,
             status,
             config,
+            results,
             error,
             created_at,
             started_at,
@@ -73,7 +79,7 @@ impl Job {
         Ok(())
     }
 
-    pub fn complete(&mut self) -> Result<(), Error> {
+    pub fn complete(&mut self, results: HashMap<String, String>) -> Result<(), Error> {
         if self.status != JobStatus::InProgress {
             return Err(Error::InvalidInput(format!(
                 "cannot complete a job in status {:?}",
@@ -82,6 +88,7 @@ impl Job {
         }
 
         self.status = JobStatus::Completed;
+        self.results = Some(results);
         self.finished_at = Some(Utc::now());
         Ok(())
     }
@@ -114,6 +121,10 @@ impl Job {
 
     pub fn config(&self) -> Option<&JobConfig> {
         self.config.as_ref()
+    }
+
+    pub fn results(&self) -> Option<&HashMap<String, String>> {
+        self.results.as_ref()
     }
 
     pub fn error(&self) -> Option<&str> {
