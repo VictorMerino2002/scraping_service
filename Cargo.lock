@@ -2320,6 +2320,7 @@ dependencies = [
  "chrono",
  "futures",
  "lambda_http",
+ "lambda_runtime",
  "serde",
  "serde_dynamo",
  "serde_json",

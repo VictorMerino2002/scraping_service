@@ -9,7 +9,6 @@ provider:
       api:
         path: .
         file: Dockerfile
-        platform: linux/arm64
   iam:
     role:
       statements:
