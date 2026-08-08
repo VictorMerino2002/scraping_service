@@ -27,8 +27,18 @@ struct ViewportPoint {
     y: f64,
 }
 
-const SERVERLESS_CHROME_ARGS: [&str; 3] =
-    ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"];
+// Lambda's container blocks unprivileged user namespaces, which Chromium's
+// zygote needs even in --no-sandbox mode to set up its fallback sandbox — it
+// fails with a FATAL "No usable sandbox!" from zygote_host_impl_linux.cc
+// unless the zygote (and its forking model) is skipped entirely.
+const SERVERLESS_CHROME_ARGS: [&str; 6] = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--no-zygote",
+    "--single-process",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+];
 
 pub struct ChromiumoxideScraper {
     chrome_executable_path: Option<PathBuf>,
