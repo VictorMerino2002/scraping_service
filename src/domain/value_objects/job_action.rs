@@ -41,9 +41,29 @@ pub enum Action {
     Click {
         selector: String,
     },
+    /// Clicks the visible, enabled element whose exact trimmed text content
+    /// matches `text`. Needed for custom-element/shadow-DOM UIs (e.g. Wallapop's
+    /// `walla-button`/`walla-list-item`) where no stable CSS selector exists for
+    /// individual dropdown options or action buttons.
+    ClickText {
+        text: String,
+    },
     Type {
         selector: String,
         text: ValueSource,
+    },
+    /// Replaces a native input/textarea's value directly (via its property
+    /// setter, then dispatches `input`/`change`), instead of appending
+    /// keystrokes like `Type`. Needed to overwrite pre-filled content (e.g.
+    /// an AI-generated title) without first selecting existing text.
+    Fill {
+        selector: String,
+        text: ValueSource,
+    },
+    /// Sets the given file input's files, downloading each `urls` entry first.
+    UploadFile {
+        selector: String,
+        urls: Vec<String>,
     },
     Scroll {
         selector: String,
@@ -54,4 +74,7 @@ pub enum Action {
         #[serde(default)]
         attribute: Option<String>,
     },
+    /// Captures the page's current URL, e.g. to record the URL a form
+    /// submission redirected to.
+    ExtractUrl,
 }
