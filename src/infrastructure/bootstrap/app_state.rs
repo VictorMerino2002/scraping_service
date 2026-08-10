@@ -7,8 +7,8 @@ use aws_sdk_s3::Client as S3Client;
 use crate::{
     application::ports::{ActionSerializer, JobRepositoryPort, ScraperPort},
     infrastructure::adapters::{
-        ChromiumoxideScraper, DynamoS3JobRepository, JsonActionSerializer,
-        DEFAULT_S3_OFFLOAD_THRESHOLD_BYTES,
+        ChromiumoxideScraper, DEFAULT_S3_OFFLOAD_THRESHOLD_BYTES, DynamoS3JobRepository,
+        JsonActionSerializer,
     },
 };
 
@@ -19,6 +19,8 @@ pub struct AppState {
 }
 
 pub async fn setup() -> AppState {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let aws_config = aws_config::load_from_env().await;
     let dynamo_client = DynamoDbClient::new(&aws_config);
     let s3_client = S3Client::new(&aws_config);
@@ -27,7 +29,9 @@ pub async fn setup() -> AppState {
         .expect("JOBS_TABLE_NAME must be set in environment variables");
     let bucket_name = std::env::var("JOBS_BUCKET_NAME")
         .expect("JOBS_BUCKET_NAME must be set in environment variables");
-    let chrome_executable_path = std::env::var("CHROME_EXECUTABLE_PATH").ok().map(PathBuf::from);
+    let chrome_executable_path = std::env::var("CHROME_EXECUTABLE_PATH")
+        .ok()
+        .map(PathBuf::from);
 
     let job_repository = Arc::new(DynamoS3JobRepository::new(
         dynamo_client,

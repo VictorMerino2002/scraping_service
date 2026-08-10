@@ -46,7 +46,6 @@ functions:
     environment:
       JOBS_TABLE_NAME: ${self:custom.jobsTableName}
       JOBS_BUCKET_NAME: ${self:custom.jobsBucketName}
-      SECRET_KEY: xxxxxxxxxxxxx
     events:
       - httpApi:
           path: /{proxy+}
@@ -60,7 +59,6 @@ functions:
     environment:
       JOBS_TABLE_NAME: ${self:custom.jobsTableName}
       JOBS_BUCKET_NAME: ${self:custom.jobsBucketName}
-      SECRET_KEY: xxxxxxxxxxxxx
 
 resources:
   Resources:
