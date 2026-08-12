@@ -15,4 +15,6 @@ pub struct Cookie {
     pub domain: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    #[serde(default)]
+    pub secure: Option<bool>,
 }

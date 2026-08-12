@@ -31,13 +31,18 @@ struct ViewportPoint {
 // zygote needs even in --no-sandbox mode to set up its fallback sandbox — it
 // fails with a FATAL "No usable sandbox!" from zygote_host_impl_linux.cc
 // unless the zygote (and its forking model) is skipped entirely.
+//
+// chromiumoxide's `Arg::from(&str)` uses the string verbatim as the flag name
+// and prefixes it with its own "--" when rendering the command line, so these
+// must NOT include a leading "--" themselves (passing "--no-sandbox" here
+// would launch Chromium with the literal, unrecognized "----no-sandbox").
 const SERVERLESS_CHROME_ARGS: [&str; 6] = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--no-zygote",
-    "--single-process",
-    "--disable-gpu",
-    "--disable-dev-shm-usage",
+    "no-sandbox",
+    "disable-setuid-sandbox",
+    "no-zygote",
+    "single-process",
+    "disable-gpu",
+    "disable-dev-shm-usage",
 ];
 
 pub struct ChromiumoxideScraper {
@@ -57,7 +62,17 @@ impl ChromiumoxideScraper {
 #[async_trait]
 impl ScraperPort for ChromiumoxideScraper {
     async fn execute(&self, job: &Job) -> Result<HashMap<String, String>, Error> {
-        let mut builder = BrowserConfig::builder().args(SERVERLESS_CHROME_ARGS);
+        let mut builder = BrowserConfig::builder();
+
+        // These args work around constraints specific to Lambda's container (see
+        // the comment on SERVERLESS_CHROME_ARGS) and are actively harmful outside
+        // it — --single-process in particular is known to crash modern desktop
+        // Chrome. AWS sets AWS_LAMBDA_FUNCTION_NAME automatically in every Lambda
+        // execution environment, so this only activates there, never for local
+        // runs (e.g. the run_job binary).
+        if std::env::var("AWS_LAMBDA_FUNCTION_NAME").is_ok() {
+            builder = builder.args(SERVERLESS_CHROME_ARGS);
+        }
 
         if !self.headless {
             builder = builder.with_head();
@@ -68,7 +83,7 @@ impl ScraperPort for ChromiumoxideScraper {
         }
 
         if let Some(proxy) = job.config().and_then(|config| config.proxy.as_ref()) {
-            builder = builder.arg(format!("--proxy-server={proxy}"));
+            builder = builder.arg(("proxy-server", proxy.as_str()));
         }
 
         let browser_config = builder.build().map_err(Error::Unknown)?;
@@ -96,19 +111,68 @@ impl ChromiumoxideScraper {
             .map_err(|error| Error::NetworkError(error.to_string()))?;
 
         if let Some(config) = job.config() {
-            Self::apply_config(&page, config).await?;
+            // CDP refuses to set cookies on a page still at "about:blank", and
+            // __Host- prefixed cookies (no `domain` attribute, by spec) are bound
+            // to the exact host they're set on. So the warm-up navigation must
+            // land on the same host the job will actually operate on — prefer the
+            // job's own first Navigate action over guessing a host from the
+            // cookies' `domain` field, which for __Host- cookies isn't even set.
+            let warmup_url = config.cookies.as_ref().and_then(|cookies| {
+                match job.actions().first() {
+                    Some(JobAction {
+                        action: Action::Navigate { url },
+                        ..
+                    }) => Some(url.clone()),
+                    _ => cookies
+                        .iter()
+                        .find_map(|cookie| cookie.domain.clone())
+                        .map(|domain| format!("https://{}", domain.trim_start_matches('.'))),
+                }
+            });
+
+            Self::apply_config(&page, config, warmup_url.as_deref()).await?;
         }
 
         let mut results = HashMap::new();
 
-        for job_action in job.actions() {
+        for (index, job_action) in job.actions().iter().enumerate() {
             let timeout =
                 Duration::from_millis(job_action.timeout.unwrap_or(DEFAULT_ACTION_TIMEOUT_MS));
 
-            let value =
+            let outcome =
                 tokio::time::timeout(timeout, Self::execute_action(&page, job_action, &results))
-                    .await
-                    .map_err(|_| Error::NetworkError("action timed out".to_string()))??;
+                    .await;
+
+            let value = match outcome {
+                Ok(result) => result?,
+                Err(_) => {
+                    // The current URL only tells us whether we got redirected
+                    // somewhere else entirely (e.g. bounced to a login page). If
+                    // we're on the expected page but a selector still never shows
+                    // up, the title/visible text is what actually explains why —
+                    // e.g. an anti-bot challenge ("Just a moment...", "Verifying
+                    // you are human") or an error page rendered in place, which a
+                    // same-URL redirect wouldn't reveal.
+                    let current_url = page
+                        .url()
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    let page_snapshot = page
+                        .evaluate_expression(
+                            "JSON.stringify({title: document.title, text: (document.body?.innerText || '').slice(0, 300)})",
+                        )
+                        .await
+                        .ok()
+                        .and_then(|result| result.into_value::<String>().ok())
+                        .unwrap_or_else(|| "<unavailable>".to_string());
+                    return Err(Error::NetworkError(format!(
+                        "action #{index} timed out after {timeout:?} on {current_url}: {:?}\npage snapshot: {page_snapshot}",
+                        job_action.action
+                    )));
+                }
+            };
 
             if let (Some(key), Some(value)) = (&job_action.result_key, value) {
                 results.insert(key.clone(), value);
@@ -118,7 +182,11 @@ impl ChromiumoxideScraper {
         Ok(results)
     }
 
-    async fn apply_config(page: &Page, config: &JobConfig) -> Result<(), Error> {
+    async fn apply_config(
+        page: &Page,
+        config: &JobConfig,
+        warmup_url: Option<&str>,
+    ) -> Result<(), Error> {
         if let Some(user_agent) = &config.user_agent {
             page.set_user_agent(user_agent.as_str())
                 .await
@@ -126,12 +194,19 @@ impl ChromiumoxideScraper {
         }
 
         if let Some(cookies) = &config.cookies {
+            if let Some(warmup_url) = warmup_url {
+                page.goto(warmup_url)
+                    .await
+                    .map_err(|error| Error::NetworkError(error.to_string()))?;
+            }
+
             let cookie_params: Vec<CookieParam> = cookies
                 .iter()
                 .cloned()
                 .map(|cookie| CookieParam {
                     domain: cookie.domain,
                     path: cookie.path,
+                    secure: cookie.secure,
                     ..CookieParam::new(cookie.name, cookie.value)
                 })
                 .collect();
